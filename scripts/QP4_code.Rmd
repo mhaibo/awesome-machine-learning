@@ -1,0 +1,234 @@
+---
+title: "QP4"
+output: pdf_document
+date: "2024-02-18"
+---
+
+```{r}
+BC_data <- readRDS("/Users/wuhaibo/Desktop/UBC_academic/QP/QP4/Data/bc-covid.rds")
+```
+
+### non-parametric model
+```{r}
+num_covid <- BC_data$cases[1:1088]  #cut the part of data
+
+nonpara_model <- function(params){
+  mu <- params[1]            # introduce the parameters into the model
+  g_raw <- params[2:17]
+  g <- exp(g_raw) / sum(exp(g_raw))  # set constraints to make g be non-negative and integrated to 1
+  k_raw <- params[18:85]     # the length of each window is 16 and there are 68 windows according to the length of the data
+  k <- rep(k_raw, each = 16)
+  
+  sse <- 0 
+  T <- 1088
+  for (t in 17:T) {
+      num_lagged <- num_covid[(t-16):(t-1)]
+      k_values <- k[(t-16):(t-1)]
+      num_pred <- mu + sum(k_values * g * num_lagged)
+      sse <- sse + (num_covid[t] - num_pred)^2       # the objective function
+    
+  }
+  return(sse)
+}
+```
+
+## estimate the parameters
+```{r}
+# set the starting values for the parameter vector
+mu_initial <- 1 
+k_initial <- rep(1,68)
+g_initial <- rep(1/16,16)
+params_initial <- c(mu_initial,g_initial, k_initial)
+# optimize the model with optim with 10000 iterations 
+np_optim_result <- optim(par = params_initial, fn = nonpara_model, method = "Nelder-Mead", control = list(maxit = 10000))
+
+```
+
+```{r}
+# extract the estimated value of each parameter mu, g and k
+np_optimized_params <- np_optim_result$par
+np_optimized_mu <- np_optimized_params[1]
+np_optimized_k_raw <- np_optimized_params[18:85]
+np_optimized_k <- rep(np_optimized_k_raw, each = 16)
+np_optimized_g <- exp(np_optimized_params[2:17]) / sum(exp(np_optimized_params[2:17]))
+```
+
+## calculate the root mean square error of predicted number of daily cases
+```{r}
+T <- 1088
+np_num_pred <- c(num_covid[1:16],rep(0,1072))
+for (t in (17:T)){
+  k_values <- np_optimized_k[(t-16):(t-1)]
+  np_num_pred[t] <- np_optimized_mu + sum(np_optimized_k[(t-16):(t-1)] * np_optimized_g * np_num_pred[(t-16):(t-1)])
+}
+np_root_mean_square <- sqrt(sum((np_num_pred-num_covid)^2)/T)
+```
+
+## generate the figures
+```{r}
+# Combine the data into a data frame
+data <- data.frame(Day = rep(1:1088, 2),
+                   Cases = c(num_covid, round(np_num_pred)),
+                   Type = rep(c("Actual", "Estimated"), each = 1088))
+ggplot(data, aes(x = Day, y = Cases, color = Type)) +
+  geom_line() +
+  labs(x = "Day", y = "Cases", title = "Actual vs. Estimated COVID Cases") +
+  theme(
+  plot.background = element_rect(fill = "white", colour = NA),
+  panel.background = element_rect(fill = "white", colour = NA), 
+  panel.grid.major = element_blank(), 
+  panel.grid.minor = element_blank(),
+  legend.key = element_rect(fill = "white", colour = NA),
+  legend.position = c(0.95, 0.95), 
+    legend.justification = c("right", "top")
+  )+
+  scale_color_manual(values = c("Actual" = "blue", "Estimated" = "red"))+
+  guides(color = guide_legend(title = NULL))
+
+```
+
+## plot of estimate g within a 16-days window
+```{r}
+data <- data.frame(
+  TimeStep = 0:16,
+  Value = c(np_optimized_g,last(np_optimized_g))
+)
+ggplot(data, aes(x = TimeStep, y = Value)) +
+  geom_step() +
+  scale_x_continuous(breaks = 1:16) +  # Ensure x-axis ticks for each step
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey") +  # Add horizontal line at 0
+  labs(x = "u days", y = "g(u)") +
+   theme(
+    plot.background = element_rect(fill = "white", colour = NA), # Set plot background to white
+    panel.background = element_rect(fill = "white", colour = NA), # Set panel background to white
+    panel.grid.major = element_blank(), # Remove major grid lines
+    panel.grid.minor = element_blank(), # Remove minor grid lines
+  )
+```
+## estimated K for each window
+
+```{r}
+data <- data.frame(
+  TimeStep = 0:68,
+  Value = c(np_optimized_k_raw,last(np_optimized_k_raw))
+)
+ggplot(data, aes(x = TimeStep, y = Value)) +
+  geom_step() +
+  scale_x_continuous( breaks = c(0, 200, 400, 600, 800, 1000) / 1000 * 68, labels = c("0", "200", "400", "600", "800", "1000")) +  # Ensure x-axis ticks for each step
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey") +  # Add horizontal line at 0
+  labs(x = "u days", y = "K(u)") +
+   theme(
+    plot.background = element_rect(fill = "white", colour = NA), # Set plot background to white
+    panel.background = element_rect(fill = "white", colour = NA), # Set panel background to white
+    panel.grid.major = element_blank(), # Remove major grid lines
+    panel.grid.minor = element_blank(), # Remove minor grid lines
+  )
+```
+
+
+
+### parametric model
+```{r}
+para_model <- function(params){
+  mu <- params[1]
+  nu <- params[2]
+  sigma <- params[3]
+  #win_length <- 16
+  g <- dnorm(1:16, nu, sigma)
+  k_raw <- params[4:71]
+  k <- rep(k_raw, each = 16)
+  
+  sse <- 0 
+  T <- 1088
+  for (t in 17:T) {
+      num_lagged <- num_covid[(t-16):(t-1)]
+      k_values <- k[(t-16):(t-1)]
+      num_pred <- mu + sum(k_values * g * num_lagged)
+      sse <- sse + (num_covid[t] - num_pred)^2
+  }
+  return(sse)
+}
+```
+
+## estimate the parameters
+```{r}
+# set the initial values for mu,k, nu and sigma
+mu_initial <- 1 
+k_initial <- rep(1,68)
+nu_initial <- 11
+sigma_initial <- 1
+params_initial <- c(mu_initial,nu_initial, sigma_initial, k_initial)
+# optimize the parameters with 10000 iterations
+p_optim_result <- optim(par = params_initial, fn = para_model, method = "Nelder-Mead", control = list(maxit = 10000))
+```
+
+```{r}
+# extract the estimated value of each parameter mu, nu, sigma and k
+p_optimized_params <- p_optim_result$par
+p_optimized_mu <- p_optimized_params[1]
+p_optimized_nu <- p_optimized_params[2]
+p_optimized_sigma <- p_optimized_params[3]
+p_optimized_k_raw <- p_optimized_params[4:71]
+p_optimized_k <- rep(p_optimized_k_raw, each = 16)
+```
+
+```{r}
+p_num_pred <- c(num_covid[1:16],rep(0,1072))
+T <- 1088
+for (t in (17:T)){
+  p_num_pred[t] <- p_optimized_mu + sum(p_optimized_k[(t-16):(t-1)] * dnorm(1:16,p_optimized_nu,p_optimized_sigma) *p_num_pred[(t-16):(t-1)])
+}
+p_root_mean_square <- sqrt(sum((p_num_pred-num_covid)^2)/T)
+```
+
+## generate the figures
+```{r}
+data <- data.frame(Day = rep(1:1088, 2),
+                   Cases = c(num_covid, round(p_num_pred)),
+                   Type = rep(c("Actual", "Estimated"), each = 1088))
+ggplot(data, aes(x = Day, y = Cases, color = Type)) +
+  geom_line() +
+  labs(x = "Day", y = "Cases", title = "Actual vs. Estimated COVID Cases") +
+  theme(
+  plot.background = element_rect(fill = "white", colour = NA),
+  panel.background = element_rect(fill = "white", colour = NA), 
+  panel.grid.major = element_blank(), 
+  panel.grid.minor = element_blank(),
+  legend.key = element_rect(fill = "white", colour = NA),
+  legend.position = c(0.95, 0.95), 
+    legend.justification = c("right", "top")
+  )+
+  scale_color_manual(values = c("Actual" = "blue", "Estimated" = "red"))+
+  guides(color = guide_legend(title = NULL))
+```
+```{r}
+library(ggplot2)
+ggplot(data.frame(x = c(4, 20)), aes(x = x)) +
+  # Add the normal distribution density function
+  stat_function(fun = dnorm, args = list(mean = round(p_optimized_nu,1), sd = round(p_optimized_sigma)), color = "black") +
+  # Add labels and theme
+  labs(x = "Value", y = "Density", title = "Density of a Standard Normal Distribution") +
+  theme_minimal() +
+  theme(plot.background = element_rect(fill = "white", colour = NA), # Set plot background to white
+        panel.background = element_rect(fill = "white", colour = NA), # Set panel background to white
+        panel.grid.major = element_blank(), # Remove major grid lines
+        panel.grid.minor = element_blank(), # Remove minor grid lines
+        panel.border = element_blank()) # Remove panel border
+```
+## plot  K
+```{r}
+data <- data.frame(
+  TimeStep = 0:68,
+  Value = c(p_optimized_k_raw,last(p_optimized_k_raw))
+)
+ggplot(data, aes(x = TimeStep, y = Value)) +
+  geom_step() +
+  scale_x_continuous( breaks = c(0, 200, 400, 600, 800, 1000) / 1000 * 68, labels = c("0", "200", "400", "600", "800", "1000")) +  # Ensure x-axis ticks for each step
+  labs(x = "u days", y = "K(u)") +
+   theme(
+    plot.background = element_rect(fill = "white", colour = NA), # Set plot background to white
+    panel.background = element_rect(fill = "white", colour = NA), # Set panel background to white
+    panel.grid.major = element_blank(), # Remove major grid lines
+    panel.grid.minor = element_blank(), # Remove minor grid lines
+  )
+```
